@@ -137,6 +137,38 @@ app.post("/api/generate", async (req, res) => {
   }
 });
 
+// Preview: build the same document, but return it rendered as HTML for an in-app popup
+// instead of downloading the file. Lets the rep eyeball it before generating.
+app.post("/api/preview", async (req, res) => {
+  const cleanup = [];
+  try {
+    let deal = req.body.deal;
+    if (!deal && req.body.opportunityId) {
+      const sf = require("./salesforce");
+      deal = await sf.getDeal(req.body.opportunityId);
+    }
+    if (!deal) return res.status(400).json({ error: "provide either opportunityId or deal" });
+
+    const choices = req.body.choices || {};
+    const proposal = req.body.proposal ? { ...req.body.proposal } : null;
+    if (proposal) {
+      const tmpDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "dd-photos-"));
+      cleanup.push(tmpDir);
+      proposal.photos = savePhotos(req.body.photos, tmpDir);
+      choices.proposal = proposal;
+    }
+    const result = await generate.generateDocument(deal, choices);
+    const mammoth = require("mammoth");
+    const conv = await mammoth.convertToHtml({ path: result.file });
+    try { fs.unlinkSync(result.file); } catch (_) {}
+    res.json({ html: conv.value || "" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    res.on("finish", () => cleanup.forEach((d) => fs.rm(d, { recursive: true, force: true }, () => {})));
+  }
+});
+
 // Serve the built frontend if present (single-service deploy option).
 const FRONTEND = path.join(__dirname, "..", "public");
 if (fs.existsSync(FRONTEND)) app.use(express.static(FRONTEND));

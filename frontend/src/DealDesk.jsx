@@ -104,6 +104,9 @@ export default function DealDesk() {
   const [loadedDeal, setLoadedDeal] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState("");
   const [status, setStatus] = useState(null); // { type: 'ok'|'err', msg }
   // decisions not stored in Salesforce
   const [provision, setProvision] = useState("default");
@@ -241,54 +244,68 @@ export default function DealDesk() {
 
   const linesToArr = (s) => String(s || "").split("\n").map((x) => x.trim()).filter(Boolean);
 
+  function buildGenerateBody() {
+    const hw = hardware.filter((h) => h.item || h.name);
+    const deal = {
+      ...(loadedDeal || {}),
+      customer_legal_name: customer,
+      term_months: Number(contractTerm) || 12,
+      billing_start_date: billingStartDate || "",
+      effective_date: effectiveDate || "",
+      expansion_kpis: expansionKpis || "",
+      skus: sku,
+      pricing: {
+        tier: TIER_TO_SF[tier], lines: Math.max(1, lines || 1), annual: billing === "annual",
+        customDiscount: (Number(custom) || 0) / 100, currency,
+        activities: { customerReferral: !!acts.referral, logoRights: !!acts.logo, caseStudy: !!acts.case, videoTestimonial: !!acts.video },
+      },
+      hardware: hw.map((h) => ({ name: h.item || h.name, cost: h.cost })),
+    };
+    const choices = { hardware: { provision, procurement }, install_timeline: installTimeline, end_phase1_date: endPhase1 };
+    const proposal = {
+      executive_summary: execSummary,
+      applications: [{
+        name: appName || "Application",
+        problem, solution,
+        inspection_points: linesToArr(inspection),
+        before_after: beforeAfter.filter((r) => r.before || r.after).map((r) => [r.before, r.after]),
+        hardware: hw.map((h) => [h.item || h.name, h.qty, h.description]),
+        impact: { total_annual_value: Number(annualSavings) || undefined },
+        preventative_benefits: linesToArr(preventative),
+        upside_benefits: linesToArr(upside),
+        assumptions: linesToArr(assumptions),
+        timeline: linesToArr(propTimeline),
+        risks: risks.filter((r) => r.risk || r.mitigation).map((r) => [r.risk, r.mitigation]),
+      }],
+    };
+    return { deal, choices, proposal, photos };
+  }
+
   async function generateDocuments() {
     setGenerating(true); setStatus(null);
     try {
       const safe = (customer || "customer").replace(/[^a-z0-9]+/gi, "_");
-      const hw = hardware.filter((h) => h.item || h.name);
-      const deal = {
-        ...(loadedDeal || {}),
-        customer_legal_name: customer,
-        term_months: Number(contractTerm) || 12,
-        billing_start_date: billingStartDate || "",
-        effective_date: effectiveDate || "",
-        expansion_kpis: expansionKpis || "",
-        skus: sku,
-        pricing: {
-          tier: TIER_TO_SF[tier], lines: Math.max(1, lines || 1), annual: billing === "annual",
-          customDiscount: (Number(custom) || 0) / 100, currency,
-          activities: { customerReferral: !!acts.referral, logoRights: !!acts.logo, caseStudy: !!acts.case, videoTestimonial: !!acts.video },
-        },
-        hardware: hw.map((h) => ({ name: h.item || h.name, cost: h.cost })),
-      };
-      const choices = { hardware: { provision, procurement }, install_timeline: installTimeline, end_phase1_date: endPhase1 };
-
-      const proposal = {
-        executive_summary: execSummary,
-        applications: [{
-          name: appName || "Application",
-          problem,
-          solution,
-          inspection_points: linesToArr(inspection),
-          before_after: beforeAfter.filter((r) => r.before || r.after).map((r) => [r.before, r.after]),
-          hardware: hw.map((h) => [h.item || h.name, h.qty, h.description]),
-          impact: { total_annual_value: Number(annualSavings) || undefined },
-          preventative_benefits: linesToArr(preventative),
-          upside_benefits: linesToArr(upside),
-          assumptions: linesToArr(assumptions),
-          timeline: linesToArr(propTimeline),
-          risks: risks.filter((r) => r.risk || r.mitigation).map((r) => [r.risk, r.mitigation]),
-        }],
-      };
-
       setStatus({ type: "ok", msg: "Generating the document (" + currency + ")..." });
-      await downloadDoc("/api/generate", { deal, choices, proposal, photos },
+      await downloadDoc("/api/generate", buildGenerateBody(),
         "Maneva_-_" + safe + "_-_Service_Agreement.docx", "Document");
-
       setGenerated(true);
       setStatus({ type: "ok", msg: "Document generated and downloaded." });
     } catch (e) { setStatus({ type: "err", msg: e.message }); }
     finally { setGenerating(false); }
+  }
+
+  async function previewDocument() {
+    setPreviewing(true); setStatus(null);
+    try {
+      const res = await fetch(API_BASE + "/api/preview", {
+        method: "POST", headers: authHeaders(), body: JSON.stringify(buildGenerateBody()),
+      });
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || ("Preview failed (" + res.status + ")")); }
+      const data = await res.json();
+      setPreviewHtml(data.html || "<p>(nothing to preview)</p>");
+      setPreviewOpen(true);
+    } catch (e) { setStatus({ type: "err", msg: e.message }); }
+    finally { setPreviewing(false); }
   }
 
   function addPhotos(fileList) {
@@ -664,7 +681,10 @@ export default function DealDesk() {
                   : <span className="pend">queued</span>}
               </div>
             </div>
-            <button className="gen" onClick={generateDocuments} disabled={generating}>
+            <button className="gen ghostbtn" onClick={previewDocument} disabled={previewing || generating}>
+              <FileText size={15} /> {previewing ? "Building preview…" : "Preview document"}
+            </button>
+            <button className="gen" onClick={generateDocuments} disabled={generating || previewing}>
               <Sparkles size={15} /> {generating ? "Generating…" : "Generate document"} <ArrowRight size={15} />
             </button>
             {status && (
@@ -676,6 +696,25 @@ export default function DealDesk() {
           </div>
         </div>
       </div>
+
+      {previewOpen && (
+        <div className="modal-ov" onClick={() => setPreviewOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-h">
+              <div style={{ fontWeight: 700, fontFamily: "var(--display)" }}>Document preview</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="modal-btn" onClick={() => {
+                  const f = document.getElementById("preview-frame");
+                  if (f && f.contentWindow) f.contentWindow.print();
+                }}>Print / Save as PDF</button>
+                <button className="modal-x" onClick={() => setPreviewOpen(false)}>Close</button>
+              </div>
+            </div>
+            <iframe id="preview-frame" className="modal-frame" title="Document preview"
+              srcDoc={"<style>body{font-family:Georgia,'Times New Roman',serif;color:#1a1a1a;max-width:780px;margin:24px auto;padding:0 28px;line-height:1.5}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #ccc;padding:6px 9px;font-size:13px;text-align:left;vertical-align:top}h1,h2,h3{font-family:Arial,Helvetica,sans-serif;line-height:1.25}img{max-width:100%;height:auto}</style>" + previewHtml} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -741,10 +780,10 @@ const CSS = `
 .login-foot{margin-top:16px;font-size:11.5px;color:var(--ink-soft);text-align:center}
 .who{font-size:12.5px;color:var(--ink-soft);font-weight:600}
 
-.wrap{max-width:1180px;margin:0 auto;padding:28px;display:grid;grid-template-columns:1fr 1fr;gap:22px}
-@media(max-width:900px){.wrap{grid-template-columns:1fr}}
+.wrap{max-width:1340px;margin:0 auto;padding:28px;display:grid;grid-template-columns:1.55fr 1fr;gap:22px}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}.col:nth-child(2){position:static}}
 .col{display:flex;flex-direction:column;gap:18px;animation:rise .5s ease both}
-.col:nth-child(2){animation-delay:.08s}
+.col:nth-child(2){animation-delay:.08s;position:sticky;top:86px;align-self:start}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 
 .chip{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-soft);
@@ -836,6 +875,20 @@ const CSS = `
   font-family:var(--display);font-weight:700;font-size:14px;color:#fff;background:var(--ink);
   border:none;border-radius:9px;padding:13px;cursor:pointer;transition:.15s}
 .gen:hover{background:var(--amber)}
+.gen.ghostbtn{color:var(--ink);background:transparent;border:1px solid var(--line-2);margin-bottom:0;padding-top:11px;padding-bottom:11px}
+.gen.ghostbtn:hover{background:var(--paper);border-color:var(--ink)}
+.gen:disabled{opacity:.55;cursor:default}
+
+/* preview popup */
+.modal-ov{position:fixed;inset:0;background:rgba(20,25,30,.45);display:grid;place-items:center;z-index:60;padding:24px;animation:rise .15s ease both}
+.modal{width:100%;max-width:920px;height:86vh;background:var(--panel);border-radius:14px;overflow:hidden;
+  display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(0,0,0,.3)}
+.modal-h{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.modal-btn{font-family:var(--body);font-weight:700;font-size:12.5px;color:#fff;background:var(--ink);border:none;border-radius:8px;padding:8px 14px;cursor:pointer}
+.modal-btn:hover{background:var(--amber)}
+.modal-x{font-family:var(--body);font-weight:600;font-size:12.5px;color:var(--ink);background:transparent;border:1px solid var(--line-2);border-radius:8px;padding:8px 14px;cursor:pointer}
+.modal-x:hover{border-color:var(--ink)}
+.modal-frame{flex:1;width:100%;border:none;background:#fff}
 .payload{margin:0 16px 16px;border:1px solid var(--line-2);border-radius:9px;overflow:hidden;animation:rise .3s ease both}
 .payload-h{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.04em;
   text-transform:uppercase;color:var(--ink-soft);padding:8px 12px;background:var(--paper);border-bottom:1px solid var(--line)}
@@ -846,7 +899,7 @@ const CSS = `
 .hw{display:flex;flex-direction:column;gap:8px}
 .hw-row{display:grid;grid-template-columns:1fr 1fr 32px;gap:8px;align-items:center}
 .hw-row4{display:grid;grid-template-columns:1.3fr 60px 1.6fr 90px 32px;gap:8px;align-items:center}
-.ta{resize:vertical;line-height:1.45;min-height:38px}
+.ta{resize:vertical;line-height:1.5;min-height:104px}
 .file{font-family:var(--body);font-size:13px;color:var(--ink)}
 .ph-name{font-size:11px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .muted2{font-family:var(--body);font-size:11.5px;color:var(--ink-soft);margin-top:6px;font-style:italic}
