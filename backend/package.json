@@ -1,0 +1,21 @@
+{
+  "name": "maneva-deal-desk-backend",
+  "version": "0.4.0",
+  "description": "Deal Desk backend: per-rep login, reads the full Opportunity from Salesforce, AI-drafts the proposal via the Platform, prices deterministically, and generates one Word file (Service Agreement with the proposal under Appendix 1).",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "add-user": "node scripts/add-user.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsforce": "^3.10.4",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

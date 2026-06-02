@@ -1,0 +1,42 @@
+{
+  "customer_legal_name": "Northwind Foods Inc.",
+  "applications": "Label Placement & Date-Code Verification",
+  "application_names": "Label Placement & Date-Code Verification",
+  "application_deployed": "Label Placement & Date-Code Verification",
+  "currency": "USD",
+  "num_lines_text": "one (1)",
+  "price": "4,000",
+  "ref_section_3": "3",
+  "ref_section_4": "4",
+  "term_text": "twelve (12) months",
+  "billing_start_date": "July 1, 2026",
+  "end_phase1_date": "September 30, 2026",
+  "eff_month": "June", "eff_day": "2", "eff_year": "2026",
+  "facility_location": "Columbus, Ohio",
+  "objectives": [
+    "Detect mislabeled, missing, or skewed product labels in real time on every unit",
+    "Verify date-code presence and legibility on every unit produced",
+    "Reduce mislabeled-product holds and downstream rework"
+  ],
+  "production_lines": ["Canning Line 3"],
+  "phase1_scope": "Continuous monitoring of label placement and date-code verification on all units produced on the Initial Deployment Line, with real-time defect alerts and a Maneva dashboard summarizing defect rates by shift and by SKU",
+  "phase1_exclusions": "Inspection of secondary packaging (cases, trays, and pallets); upstream filling or capping defects; and any production line not listed above",
+  "phase1_purpose": "validate the accuracy and reliability of the Application under live production conditions",
+  "success_metrics": "Target detection rate of 95% or greater for missing or mislabeled units, subject to data quality and available production conditions",
+  "kickoff_date": "July 1, 2026",
+  "install_timeline": "two to three weeks",
+  "phase1_duration": "eight to twelve weeks",
+  "skus": "twelve (12) representative canned-beverage SKUs",
+  "expansion_kpis": "additional defect classes such as dent and seam-integrity detection and cap/closure verification",
+  "expansion_cost": "Each Additional Deployment Line is priced per the volume schedule in the Order Form, with the per-line monthly fee decreasing as the total number of deployed lines increases",
+  "hardware": {
+    "provision": "default",
+    "procurement": "purchase",
+    "items": [
+      {"name": "Industrial vision camera (washdown-rated)", "cost": "$3,500"},
+      {"name": "NVIDIA Jetson edge compute device", "cost": "$2,200"},
+      {"name": "Supplemental LED lighting, mounting, and washdown enclosures", "cost": "$1,500"}
+    ],
+    "total": "$7,200"
+  }
+}
