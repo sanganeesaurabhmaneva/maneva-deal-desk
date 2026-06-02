@@ -126,8 +126,8 @@ export default function DealDesk() {
   const [oppId, setOppId] = useState("");
   const [loadedDeal, setLoadedDeal] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
+  const [generating, setGenerating] = useState(null); // mode currently generating
+  const [previewing, setPreviewing] = useState(null); // mode currently previewing
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
@@ -305,7 +305,7 @@ export default function DealDesk() {
 
   const linesToArr = (s) => String(s || "").split("\n").map((x) => x.trim()).filter(Boolean);
 
-  function buildGenerateBody() {
+  function buildGenerateBody(mode = "combined") {
     const hw = hardware.filter((h) => h.item || h.name);
     const deal = {
       ...(loadedDeal || {}),
@@ -322,7 +322,7 @@ export default function DealDesk() {
       },
       hardware: hw.map((h) => ({ name: h.item || h.name, cost: h.cost })),
     };
-    const choices = { hardware: { provision, procurement }, install_timeline: installTimeline, end_phase1_date: endPhase1 };
+    const choices = { mode, hardware: { provision, procurement }, install_timeline: installTimeline, end_phase1_date: endPhase1 };
     const proposal = {
       executive_summary: execSummary,
       applications: [{
@@ -342,31 +342,34 @@ export default function DealDesk() {
     return { deal, choices, proposal, photos };
   }
 
-  async function generateDocuments() {
-    setGenerating(true); setStatus(null);
+  const DOC_SLUG = { agreement: "Service_Agreement", proposal: "Proposal", combined: "Service_Agreement_and_Proposal" };
+
+  async function generateDocuments(mode = "combined") {
+    setGenerating(mode); setStatus(null);
     try {
       const safe = (customer || "customer").replace(/[^a-z0-9]+/gi, "_");
-      // Version is remembered per deal in this browser (oppId if loaded, else customer name).
-      const verKey = "ddver:" + (oppId.trim() || safe || "deal");
+      const slug = DOC_SLUG[mode] || "Document";
+      // Version is remembered per deal AND per document type in this browser.
+      const verKey = "ddver:" + (oppId.trim() || safe || "deal") + ":" + mode;
       const nextV = (parseInt(localStorage.getItem(verKey) || "0", 10) || 0) + 1;
       const d = new Date();
       const dateStr = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-      const filename = "Maneva_-_" + safe + "_-_Service_Agreement_-_" + dateStr + "_V" + nextV + ".docx";
+      const filename = "Maneva_-_" + safe + "_-_" + slug + "_-_" + dateStr + "_V" + nextV + ".docx";
       setStatus({ type: "ok", msg: "Generating " + filename + " (" + currency + ")..." });
-      await downloadDoc("/api/generate", buildGenerateBody(), filename, "Document");
+      await downloadDoc("/api/generate", buildGenerateBody(mode), filename, "Document");
       try { localStorage.setItem(verKey, String(nextV)); } catch {}
       setGenerated(true);
       setStatus({ type: "ok", msg: "Generated and downloaded " + filename });
     } catch (e) { setStatus({ type: "err", msg: e.message }); }
-    finally { setGenerating(false); }
+    finally { setGenerating(null); }
   }
 
-  async function previewDocument() {
-    setPreviewing(true); setStatus(null);
+  async function previewDocument(mode = "combined") {
+    setPreviewing(mode); setStatus(null);
     try {
       if (previewUrl) { URL.revokeObjectURL(previewUrl); setPreviewUrl(""); }
       const res = await fetch(API_BASE + "/api/preview", {
-        method: "POST", headers: authHeaders(), body: JSON.stringify(buildGenerateBody()),
+        method: "POST", headers: authHeaders(), body: JSON.stringify(buildGenerateBody(mode)),
       });
       check401(res);
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || ("Preview failed (" + res.status + ")")); }
@@ -390,7 +393,7 @@ export default function DealDesk() {
       }
       setPreviewOpen(true);
     } catch (e) { setStatus({ type: "err", msg: e.message }); }
-    finally { setPreviewing(false); }
+    finally { setPreviewing(null); }
   }
 
   function closePreview() {
@@ -760,23 +763,27 @@ export default function DealDesk() {
             {loadedDeal && (
               <div className="loaded"><Check size={12} strokeWidth={3} /> Loaded from Salesforce: scope, objectives, and dates for {customer}</div>
             )}
-            <div className="docs">
-              <div className="doc">
-                <FileText size={16} color="var(--ink-soft)" />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13.5 }}>Service Agreement (with proposal under Appendix 1)</div>
-                  <div style={{ fontSize: 11.5, color: "var(--ink-soft)" }}>One Word file: Order Form, Terms &amp; Conditions, the project scope, and your proposal content and photos under Appendix 1. Template formatting preserved.</div>
+            {[
+              { mode: "agreement", title: "Service Agreement", sub: "Order Form, Terms & Conditions, and the project scope." },
+              { mode: "proposal", title: "Proposal", sub: "The sales proposal on its own: summary, solution, pricing, and ROI." },
+              { mode: "combined", title: "Combined", sub: "The Service Agreement with the proposal under Appendix 1." },
+            ].map((row) => {
+              const busy = !!generating || !!previewing;
+              return (
+                <div className="docrow" key={row.mode}>
+                  <div className="docrow-t">{row.title}</div>
+                  <div className="docrow-sub">{row.sub}</div>
+                  <div className="docrow-btns">
+                    <button className="gen2 ghost2" onClick={() => previewDocument(row.mode)} disabled={busy}>
+                      <FileText size={14} /> {previewing === row.mode ? "Building…" : "Preview"}
+                    </button>
+                    <button className="gen2" onClick={() => generateDocuments(row.mode)} disabled={busy}>
+                      <Sparkles size={14} /> {generating === row.mode ? "Generating…" : "Generate"}
+                    </button>
+                  </div>
                 </div>
-                {generated ? <span className="ready"><Check size={12} strokeWidth={3} /> ready</span>
-                  : <span className="pend">queued</span>}
-              </div>
-            </div>
-            <button className="gen ghostbtn" onClick={previewDocument} disabled={previewing || generating}>
-              <FileText size={15} /> {previewing ? "Building preview…" : "Preview document"}
-            </button>
-            <button className="gen" onClick={generateDocuments} disabled={generating || previewing}>
-              <Sparkles size={15} /> {generating ? "Generating…" : "Generate document"} <ArrowRight size={15} />
-            </button>
+              );
+            })}
             {status && (
               <div className={"status " + (status.type === "err" ? "status-err" : "status-ok")}>
                 {status.type === "err" ? <AlertTriangle size={13} /> : <Check size={13} strokeWidth={3} />}
@@ -978,6 +985,19 @@ const CSS = `
 .gen.ghostbtn{color:var(--ink);background:transparent;border:1px solid var(--line-2);margin-bottom:0;padding-top:11px;padding-bottom:11px}
 .gen.ghostbtn:hover{background:var(--paper);border-color:var(--ink)}
 .gen:disabled{opacity:.55;cursor:default}
+
+/* three document rows (Service Agreement / Proposal / Combined) */
+.docrow{border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin:0 16px 10px;background:var(--paper)}
+.docrow:first-of-type{margin-top:6px}
+.docrow-t{font-family:var(--display);font-weight:700;font-size:13.5px;color:var(--ink)}
+.docrow-sub{font-size:11.5px;color:var(--ink-soft);margin:2px 0 10px;line-height:1.4}
+.docrow-btns{display:flex;gap:8px}
+.gen2{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;font-family:var(--display);
+  font-weight:700;font-size:12.5px;color:#fff;background:var(--ink);border:none;border-radius:8px;padding:9px;cursor:pointer;transition:.15s}
+.gen2:hover{background:var(--amber)}
+.gen2.ghost2{color:var(--ink);background:transparent;border:1px solid var(--line-2)}
+.gen2.ghost2:hover{background:#fff;border-color:var(--ink)}
+.gen2:disabled{opacity:.5;cursor:default}
 
 /* preview popup */
 .modal-ov{position:fixed;inset:0;background:rgba(20,25,30,.45);display:grid;place-items:center;z-index:60;padding:24px;animation:rise .15s ease both}

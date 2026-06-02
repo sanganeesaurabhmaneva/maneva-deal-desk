@@ -161,16 +161,20 @@ def _impact_rows(impact, pricing, currency, hardware_total):
     return rows
 
 
-def build_into(doc_path, payload, out_path):
+def build_into(doc_path, payload, out_path, standalone=False):
     proposal = (payload or {}).get("proposal") or {}
     pricing = (payload or {}).get("pricing") or {}
     currency = pricing.get("currency") or (payload or {}).get("currency") or "USD"
     photos = proposal.get("photos") or []
 
-    doc = Document(doc_path)
-
-    # start the proposal on a new page
-    doc.add_page_break()
+    if standalone:
+        # standalone proposal: a fresh document titled "Proposal" (not an appendix)
+        doc = Document()
+        _heading(doc, "Proposal", 1)
+    else:
+        doc = Document(doc_path)
+        # start the proposal on a new page, under the agreement's Appendix 1
+        doc.add_page_break()
 
     if proposal.get("executive_summary"):
         _heading(doc, "Executive Summary", 1)
@@ -178,7 +182,8 @@ def build_into(doc_path, payload, out_path):
         for para in (es if isinstance(es, list) else [es]):
             _para(doc, para)
 
-    _heading(doc, "Project Proposal", 2)
+    if not standalone:
+        _heading(doc, "Project Proposal", 2)
 
     for app in (proposal.get("applications") or []):
         _heading(doc, app.get("name", "Application"), 1)
@@ -257,8 +262,9 @@ def build_into(doc_path, payload, out_path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("usage: build_proposal.py <agreement.docx> <payload.json> <out.docx>"); sys.exit(1)
+    if len(sys.argv) < 4:
+        print("usage: build_proposal.py <agreement.docx|-> <payload.json> <out.docx> [standalone]"); sys.exit(1)
+    standalone = sys.argv[1] == "-" or (len(sys.argv) >= 5 and sys.argv[4] == "standalone")
     payload = json.load(open(sys.argv[2], encoding="utf-8"))
-    build_into(sys.argv[1], payload, sys.argv[3])
+    build_into(None if standalone else sys.argv[1], payload, sys.argv[3], standalone=standalone)
     print("wrote", sys.argv[3])

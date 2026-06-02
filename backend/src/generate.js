@@ -104,31 +104,62 @@ function runProposal(agreementPath, proposalPayloadObj, outPath) {
   });
 }
 
+/** Run the proposal engine standalone: a fresh doc titled "Proposal". Returns out path. */
+function runProposalStandalone(proposalPayloadObj, outPath) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    const payloadFile = outPath + ".prop.json";
+    fs.writeFileSync(payloadFile, JSON.stringify(proposalPayloadObj));
+    const py = process.env.PYTHON_BIN || "python3";
+    execFile(py, [PROPOSAL_ENGINE, "-", payloadFile, outPath, "standalone"], (err, stdout, stderr) => {
+      try { fs.unlinkSync(payloadFile); } catch (_) {}
+      if (err) return reject(new Error(`proposal engine failed: ${stderr || err.message}`));
+      resolve(outPath);
+    });
+  });
+}
+
 /**
- * Generate the single combined Word file: the Service Agreement (Order Form + Terms and
- * Conditions) with the proposal under Appendix 1. The agreement is filled deterministically;
- * the proposal content and photos come from the rep (choices.proposal).
+ * Generate a Word file. `choices.mode` selects what to produce:
+ *   "agreement" -> Service Agreement only (Order Form + Terms + project scope)
+ *   "proposal"  -> the sales proposal only, as a standalone doc titled "Proposal"
+ *   "combined"  -> the Service Agreement with the proposal under Appendix 1 (default)
+ * The agreement is filled deterministically; the proposal content and photos come from
+ * the rep (choices.proposal).
  */
 async function generateDocument(deal, choices = {}) {
   const { payload, pricing: p } = buildPayload(deal, choices);
   const template = path.join(TEMPLATES, "msa_template.docx");
-  if (!fs.existsSync(template)) {
+  const mode = choices.mode || "combined";
+  if (mode !== "proposal" && !fs.existsSync(template)) {
     throw new Error(`Template missing: ${template}. Copy your MSA .docx there as msa_template.docx`);
   }
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   const safeName = (deal.customer_legal_name || "customer").replace(/[^a-z0-9]+/gi, "_");
   const stamp = Date.now();
 
-  // 1) fill the agreement
-  const agreement = path.join(OUTPUT_DIR, `_agr_${safeName}_${stamp}.docx`);
-  await runEngine(template, payload, agreement);
-
-  // 2) if the rep supplied proposal content, append it under Appendix 1 -> combined file
   const proposal = choices.proposal;
   const hasProposal = proposal && ((proposal.applications && proposal.applications.length) || proposal.executive_summary);
-  const finalName = `Maneva_-_${safeName}_-_Service_Agreement_${stamp}.docx`;
-  const finalPath = path.join(OUTPUT_DIR, finalName);
 
+  // Proposal only -> standalone document.
+  if (mode === "proposal") {
+    if (!hasProposal) throw new Error("No proposal content to generate. Load an opportunity or fill the proposal first.");
+    const finalPath = path.join(OUTPUT_DIR, `Maneva_-_${safeName}_-_Proposal_${stamp}.docx`);
+    await runProposalStandalone({ pricing: p, currency: deal.pricing.currency, proposal }, finalPath);
+    return { file: finalPath, pricing: p, payload };
+  }
+
+  // Agreement only -> just the filled template.
+  if (mode === "agreement") {
+    const finalPath = path.join(OUTPUT_DIR, `Maneva_-_${safeName}_-_Service_Agreement_${stamp}.docx`);
+    await runEngine(template, payload, finalPath);
+    return { file: finalPath, pricing: p, payload };
+  }
+
+  // Combined (default): fill the agreement, then append the proposal under Appendix 1.
+  const agreement = path.join(OUTPUT_DIR, `_agr_${safeName}_${stamp}.docx`);
+  await runEngine(template, payload, agreement);
+  const finalPath = path.join(OUTPUT_DIR, `Maneva_-_${safeName}_-_Service_Agreement_${stamp}.docx`);
   if (hasProposal) {
     await runProposal(agreement, { pricing: p, currency: deal.pricing.currency, proposal }, finalPath);
     try { fs.unlinkSync(agreement); } catch (_) {}
