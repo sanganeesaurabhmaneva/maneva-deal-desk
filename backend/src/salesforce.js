@@ -46,12 +46,40 @@ function selectFields(map) {
   return Object.values(map).filter(Boolean);
 }
 
+// Return the set of existing field API names (lowercased) for an object, or null
+// if the describe call fails (in which case we don't filter).
+async function existingFields(conn, objectApiName) {
+  try {
+    const meta = await conn.sobject(objectApiName).describe();
+    return new Set((meta.fields || []).map((f) => f.name.toLowerCase()));
+  } catch (_) {
+    return null;
+  }
+}
+
+// Keep only fields that actually exist on the object so one unmapped/placeholder
+// field name can't crash the whole query. Relationship paths (with a dot, e.g.
+// Account.Name) are always kept. Anything skipped is logged and simply left blank.
+function keepExisting(fields, existing, skipped) {
+  if (!existing) return fields;
+  const kept = [];
+  for (const f of fields) {
+    if (f.includes(".") || existing.has(f.toLowerCase())) kept.push(f);
+    else if (skipped) skipped.push(f);
+  }
+  return kept;
+}
+
 async function fetchProposalRecord(conn, opportunityId) {
   const oppFields = selectFields(M.OPPORTUNITY_FIELDS);
   const propFields = selectFields(M.PROPOSAL_FIELDS);
 
   if (M.PROPOSAL_OBJECT === "Opportunity") {
-    const fields = Array.from(new Set([...oppFields, ...propFields, "Id"]));
+    const existing = await existingFields(conn, "Opportunity");
+    const skipped = [];
+    const wanted = Array.from(new Set([...oppFields, ...propFields, "Id"]));
+    const fields = keepExisting(wanted, existing, skipped);
+    if (skipped.length) console.warn("[fieldMapping] These mapped fields were not found on Opportunity and were left blank:", skipped.join(", "));
     const soql = `SELECT ${fields.join(", ")} FROM Opportunity WHERE Id = '${escapeId(opportunityId)}' LIMIT 1`;
     const r = await conn.query(soql);
     if (!r.records.length) throw new Error(`No Opportunity found for Id ${opportunityId}`);
@@ -59,12 +87,20 @@ async function fetchProposalRecord(conn, opportunityId) {
   }
 
   // proposal fields live on a child object related to the opportunity
-  const oppSoql = `SELECT ${Array.from(new Set([...oppFields, "Id"])).join(", ")} FROM Opportunity WHERE Id = '${escapeId(opportunityId)}' LIMIT 1`;
+  const existingOpp = await existingFields(conn, "Opportunity");
+  const skippedOpp = [];
+  const oppSel = keepExisting(Array.from(new Set([...oppFields, "Id"])), existingOpp, skippedOpp);
+  if (skippedOpp.length) console.warn("[fieldMapping] These mapped Opportunity fields were not found and were left blank:", skippedOpp.join(", "));
+  const oppSoql = `SELECT ${oppSel.join(", ")} FROM Opportunity WHERE Id = '${escapeId(opportunityId)}' LIMIT 1`;
   const oppRes = await conn.query(oppSoql);
   if (!oppRes.records.length) throw new Error(`No Opportunity found for Id ${opportunityId}`);
 
+  const existingProp = await existingFields(conn, M.PROPOSAL_OBJECT);
+  const skippedProp = [];
+  const propSel = keepExisting(Array.from(new Set([...propFields, "Id"])), existingProp, skippedProp);
+  if (skippedProp.length) console.warn(`[fieldMapping] These mapped ${M.PROPOSAL_OBJECT} fields were not found and were left blank:`, skippedProp.join(", "));
   const rel = M.RELATIONSHIP_FIELD;
-  const propSoql = `SELECT ${Array.from(new Set([...propFields, "Id"])).join(", ")} FROM ${M.PROPOSAL_OBJECT} WHERE ${rel} = '${escapeId(opportunityId)}' ORDER BY LastModifiedDate DESC LIMIT 1`;
+  const propSoql = `SELECT ${propSel.join(", ")} FROM ${M.PROPOSAL_OBJECT} WHERE ${rel} = '${escapeId(opportunityId)}' ORDER BY LastModifiedDate DESC LIMIT 1`;
   const propRes = await conn.query(propSoql);
   return { opp: oppRes.records[0], prop: propRes.records[0] || {} };
 }
@@ -133,13 +169,11 @@ async function getDeal(opportunityId) {
 }
 
 /**
- * Read EVERY populated field on the Opportunity (standard + custom, including MEDDPICC and
- * the Proposals-section fields). Returns a clean { "Field Label": value } map of non-empty
- * fields, which is what the AI uses to draft the proposal.
+ * Read EVERY populated field on an object's single record. Returns
+ * { fields: { "Label": value }, record } where labels are optionally prefixed.
  */
-async function readAllOpportunityFields(opportunityId) {
-  const conn = await connection();
-  const meta = await conn.sobject("Opportunity").describe();
+async function readPopulatedFields(conn, objectApiName, id, labelPrefix) {
+  const meta = await conn.sobject(objectApiName).describe();
   const skip = new Set(["address", "location", "base64", "complexvalue"]);
   const fields = meta.fields.filter((f) => !skip.has((f.type || "").toLowerCase()));
   const names = fields.map((f) => f.name);
@@ -149,14 +183,34 @@ async function readAllOpportunityFields(opportunityId) {
   const record = {};
   for (let i = 0; i < names.length; i += 150) {
     const chunk = names.slice(i, i + 150);
-    const soql = `SELECT ${chunk.join(", ")} FROM Opportunity WHERE Id = '${escapeId(opportunityId)}' LIMIT 1`;
+    const soql = `SELECT ${chunk.join(", ")} FROM ${objectApiName} WHERE Id = '${escapeId(id)}' LIMIT 1`;
     const r = await conn.query(soql);
     if (r.records.length) Object.assign(record, r.records[0]);
   }
-  const populated = {};
+  const out = {};
   for (const name of names) {
     const v = record[name];
-    if (v != null && v !== "" && name !== "attributes") populated[labels[name]] = v;
+    if (v != null && v !== "" && name !== "attributes") out[(labelPrefix || "") + (labels[name] || name)] = v;
+  }
+  return { fields: out, record };
+}
+
+/**
+ * Read every populated field on the Opportunity (standard + custom, including MEDDPICC and
+ * the Proposals-section fields) AND the related Account, so the AI has the fullest possible
+ * picture when it drafts. Returns a clean { "Field Label": value } map; Account fields are
+ * prefixed with "Account: ".
+ */
+async function readAllOpportunityFields(opportunityId) {
+  const conn = await connection();
+  const opp = await readPopulatedFields(conn, "Opportunity", opportunityId, "");
+  const populated = { ...opp.fields };
+  const accountId = opp.record && opp.record.AccountId;
+  if (accountId) {
+    try {
+      const acct = await readPopulatedFields(conn, "Account", accountId, "Account: ");
+      Object.assign(populated, acct.fields);
+    } catch (_) { /* account read is best-effort; never block the draft */ }
   }
   return populated;
 }

@@ -17,7 +17,7 @@ const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(os.tmpdir(), "deal-desk-o
 const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
   "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen"];
 const numText = (n) => (n >= 0 && n <= 15 ? `${WORDS[n]} (${n})` : `${n}`);
-const monthsText = (m) => (m ? `${WORDS[m] || m} (${m}) months` : "");
+const monthsText = (m) => (m ? (WORDS[m] ? `${WORDS[m]} (${m}) months` : `${m} months`) : "");
 
 /** Build the JSON payload the Python engine expects from a normalized deal. */
 function buildPayload(deal, choices = {}) {

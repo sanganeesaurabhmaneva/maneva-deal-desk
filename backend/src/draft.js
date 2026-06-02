@@ -15,6 +15,8 @@ async function composeProposalDraft(fields, opts = {}) {
     "You draft Maneva sales proposals from Salesforce data. Maneva sells AI vision inspection " +
     "for manufacturing. Return ONLY valid JSON (no prose, no markdown fences) matching exactly:\n" +
     '{ "executive_summary": string,\n' +
+    '  "suggested_term_months": integer,\n' +
+    '  "sku_application": string,\n' +
     '  "applications": [ { "name": string, "problem": string, "solution": string,\n' +
     '     "inspection_points": [string], "before_after": [[string, string]],\n' +
     '     "hardware": [[string, string, string]],\n' +   // Item, Qty, Description
@@ -27,7 +29,13 @@ async function composeProposalDraft(fields, opts = {}) {
     "write a sensible general statement instead of a fabricated figure. Do NOT put any price, " +
     "monthly fee, ARR, or subscription number in the body (the price comes from the calculator). " +
     "Use the customer COMPANY name only; never invent individual names, quotes, emails, or phones. " +
-    "Produce one application unless the fields clearly describe several. Keep it concrete and concise.";
+    "Produce one application unless the fields clearly describe several. Keep it concrete and concise. " +
+    "Fields prefixed 'Account:' are company-level facts about the customer (industry, size, location); use them for context. " +
+    "For suggested_term_months, infer the contract length in whole months from any term, contract-length, or " +
+    "subscription-period signal on the Opportunity or Account; if there is no clear signal, use 12. " +
+    "For sku_application, read the application use-case field (which is usually a long description) and " +
+    "distill what the application DOES into ONE word, two words at most, suitable for a product code " +
+    "(for example 'Labeling', 'WeldInspect', 'FillLevel'). Never more than two words.";
   const user =
     "Customer: " + (opts.customer || "") + "\n" +
     "Currency for any contextual figures: " + (opts.currency || "USD") + "\n\n" +

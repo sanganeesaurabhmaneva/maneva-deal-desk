@@ -57,6 +57,15 @@ const money = (n, c) => curSym(c) + Math.round(n).toLocaleString("en-US");
 const API_BASE = (import.meta.env && import.meta.env.VITE_API_BASE) || "";
 const TIER_FROM_SF = { Standard: "standard", Professional: "professional", Enterprise: "enterprise" };
 const TIER_TO_SF = { standard: "Standard", professional: "Professional", enterprise: "Enterprise" };
+const TIER_ABBR = { standard: "STD", professional: "PRO", enterprise: "ENT" };
+
+// SKU = <APPLICATION>-<TIER>-<N>L, e.g. LABEL-PRO-3L. Application comes from the AI (1-2 words),
+// tier and lines come from the calculator. Returns "" if there is no application code yet.
+function buildSku(appWord, tier, lines) {
+  const app = String(appWord || "").toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  if (!app) return "";
+  return `${app}-${TIER_ABBR[tier] || "STD"}-${Math.max(1, lines || 1)}L`;
+}
 
 const TIERS = [
   { id: "standard", label: "Standard", sub: "Low complexity" },
@@ -101,6 +110,11 @@ export default function DealDesk() {
   const [procurement, setProcurement] = useState("purchase");
   const [installTimeline, setInstallTimeline] = useState("two to three weeks");
   const [endPhase1, setEndPhase1] = useState("");
+  const [effectiveDate, setEffectiveDate] = useState("");      // agreement date; blank -> today at generate
+  const [billingStartDate, setBillingStartDate] = useState("");
+  const [contractTerm, setContractTerm] = useState(12);        // months; AI suggests, rep confirms
+  const [expansionKpis, setExpansionKpis] = useState("");
+  const [skuApplication, setSkuApplication] = useState("");    // 1-2 word app code from AI; rep can edit
   const [hardware, setHardware] = useState([{ item: "", qty: "", description: "", cost: "" }]);
 
   // proposal content the rep types in (goes under Appendix 1)
@@ -142,6 +156,7 @@ export default function DealDesk() {
   const q = useMemo(() => quote(tier, Math.max(1, lines || 1), billing, activeActs, custom, currency),
     [tier, lines, billing, activeActs, custom, currency]);
   const FX = currency === "CAD" ? (1 / CAD_TO_USD) : 1;
+  const sku = buildSku(skuApplication, tier, Math.max(1, lines || 1));
 
   const annualCost = q.arr;
   const netValue = annualSavings - annualCost;
@@ -155,6 +170,8 @@ export default function DealDesk() {
   function applyDraft(draft, deal) {
     const app = (draft && draft.applications && draft.applications[0]) || {};
     if (draft && draft.executive_summary) setExecSummary(draft.executive_summary);
+    if (draft && Number(draft.suggested_term_months)) setContractTerm(Number(draft.suggested_term_months));
+    if (draft && draft.sku_application) setSkuApplication(draft.sku_application);
     if (app.name) setAppName(app.name);
     if (app.problem) setProblem(app.problem);
     if (app.solution) setSolution(app.solution);
@@ -232,6 +249,11 @@ export default function DealDesk() {
       const deal = {
         ...(loadedDeal || {}),
         customer_legal_name: customer,
+        term_months: Number(contractTerm) || 12,
+        billing_start_date: billingStartDate || "",
+        effective_date: effectiveDate || "",
+        expansion_kpis: expansionKpis || "",
+        skus: sku,
         pricing: {
           tier: TIER_TO_SF[tier], lines: Math.max(1, lines || 1), annual: billing === "annual",
           customDiscount: (Number(custom) || 0) / 100, currency,
@@ -441,6 +463,35 @@ export default function DealDesk() {
               <Field label="End of Phase 1 date">
                 <input className="inp" placeholder="e.g. September 30, 2026" value={endPhase1}
                   onChange={(e) => setEndPhase1(e.target.value)} />
+              </Field>
+            </div>
+            <div className="row2">
+              <Field label="Effective date (agreement date; blank uses today)">
+                <input className="inp" placeholder="e.g. June 2, 2026" value={effectiveDate}
+                  onChange={(e) => setEffectiveDate(e.target.value)} />
+              </Field>
+              <Field label="Billing start date">
+                <input className="inp" placeholder="e.g. July 1, 2026" value={billingStartDate}
+                  onChange={(e) => setBillingStartDate(e.target.value)} />
+              </Field>
+            </div>
+            <div className="row2">
+              <Field label="Contract term in months (AI-suggested, edit if needed)">
+                <input className="inp mono" type="number" min="1" value={contractTerm}
+                  onChange={(e) => setContractTerm(e.target.value)} />
+              </Field>
+              <Field label="Scope expansion KPIs">
+                <input className="inp" placeholder="e.g. defect escape rate, throughput" value={expansionKpis}
+                  onChange={(e) => setExpansionKpis(e.target.value)} />
+              </Field>
+            </div>
+            <div className="row2">
+              <Field label="Application code for the SKU (AI-summarized, edit if needed)">
+                <input className="inp mono" placeholder="e.g. LABEL" value={skuApplication}
+                  onChange={(e) => setSkuApplication(e.target.value)} />
+              </Field>
+              <Field label="Product SKU (auto from application, tier, lines)">
+                <input className="inp mono" value={sku} readOnly placeholder="LABEL-PRO-3L" />
               </Field>
             </div>
             <Field label="Hardware (feeds the agreement table and the proposal Hardware Requirements)">
