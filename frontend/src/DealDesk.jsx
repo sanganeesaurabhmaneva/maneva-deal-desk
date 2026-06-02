@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Factory, Calculator, FileText, ShieldCheck, TrendingUp, AlertTriangle,
   Plug, Check, Layers, Sparkles, ChevronRight, ArrowRight, Lock, Image as ImageIcon
@@ -79,10 +79,33 @@ const ACTIVITIES = [
   { id: "video", label: "Video testimonial" },
 ];
 
+// --- session persistence: keep the rep logged in across refreshes, but log out
+// automatically after 30 minutes of no activity. ---
+const SESSION_KEY = "dd_session";
+const IDLE_MS = 30 * 60 * 1000; // 30 minutes
+function loadSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    if (!s || !s.token) return null;
+    if (Date.now() - (s.last || 0) > IDLE_MS) { localStorage.removeItem(SESSION_KEY); return null; }
+    return s;
+  } catch { return null; }
+}
+function saveSession(token, user) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token, user, last: Date.now() })); } catch {}
+}
+function touchSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    if (s && s.token) { s.last = Date.now(); localStorage.setItem(SESSION_KEY, JSON.stringify(s)); }
+  } catch {}
+}
+function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch {} }
+
 export default function DealDesk() {
-  // per-rep sign-in
-  const [token, setToken] = useState("");
-  const [me, setMe] = useState(null);
+  // per-rep sign-in (restored from a saved session if one is still active)
+  const [token, setToken] = useState(() => loadSession()?.token || "");
+  const [me, setMe] = useState(() => loadSession()?.user || null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -142,6 +165,12 @@ export default function DealDesk() {
     ...(token ? { Authorization: "Bearer " + token } : {}),
   });
 
+  // If the server ever rejects our token (expired or server restarted), sign out cleanly.
+  function check401(res) {
+    if (res.status === 401) { logout(); throw new Error("Your session expired. Please sign in again."); }
+    return res;
+  }
+
   async function login() {
     if (!email.trim() || !password) { setLoginError("Enter your email and password."); return; }
     setLoggingIn(true); setLoginError("");
@@ -152,11 +181,38 @@ export default function DealDesk() {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || ("Sign-in failed (" + res.status + ")"));
+      saveSession(j.token, j.user);
       setToken(j.token); setMe(j.user); setPassword("");
     } catch (e) { setLoginError(e.message); }
     finally { setLoggingIn(false); }
   }
-  function logout() { setToken(""); setMe(null); setStatus(null); }
+  function logout() { setToken(""); setMe(null); setStatus(null); clearSession(); }
+
+  // Stay signed in while the rep is active; auto sign-out after 30 minutes idle.
+  useEffect(() => {
+    if (!token) return;
+    let timer;
+    let lastTouch = 0;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(logout, IDLE_MS);
+      const now = Date.now();
+      if (now - lastTouch > 20000) { lastTouch = now; touchSession(); }
+    };
+    const events = ["mousedown", "keydown", "scroll", "touchstart", "click", "mousemove"];
+    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && !loadSession()) logout();
+      else if (document.visibilityState === "visible") reset();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    reset();
+    return () => {
+      clearTimeout(timer);
+      events.forEach((e) => window.removeEventListener(e, reset));
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [token]);
 
   const activeActs = Object.values(acts).filter(Boolean).length;
   const q = useMemo(() => quote(tier, Math.max(1, lines || 1), billing, activeActs, custom, currency),
@@ -207,6 +263,7 @@ export default function DealDesk() {
       const res = await fetch(API_BASE + "/api/draft", {
         method: "POST", headers: authHeaders(), body: JSON.stringify({ opportunityId: oppId.trim() }),
       });
+      check401(res);
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || ("Load failed (" + res.status + ")")); }
       const data = await res.json();
       const d = data.deal || {};
@@ -237,6 +294,7 @@ export default function DealDesk() {
 
   async function downloadDoc(path, body, filename, label) {
     const res = await fetch(API_BASE + path, { method: "POST", headers: authHeaders(), body: JSON.stringify(body) });
+    check401(res);
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((label ? label + ": " : "") + (j.error || ("failed (" + res.status + ")"))); }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -288,11 +346,17 @@ export default function DealDesk() {
     setGenerating(true); setStatus(null);
     try {
       const safe = (customer || "customer").replace(/[^a-z0-9]+/gi, "_");
-      setStatus({ type: "ok", msg: "Generating the document (" + currency + ")..." });
-      await downloadDoc("/api/generate", buildGenerateBody(),
-        "Maneva_-_" + safe + "_-_Service_Agreement.docx", "Document");
+      // Version is remembered per deal in this browser (oppId if loaded, else customer name).
+      const verKey = "ddver:" + (oppId.trim() || safe || "deal");
+      const nextV = (parseInt(localStorage.getItem(verKey) || "0", 10) || 0) + 1;
+      const d = new Date();
+      const dateStr = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      const filename = "Maneva_-_" + safe + "_-_Service_Agreement_-_" + dateStr + "_V" + nextV + ".docx";
+      setStatus({ type: "ok", msg: "Generating " + filename + " (" + currency + ")..." });
+      await downloadDoc("/api/generate", buildGenerateBody(), filename, "Document");
+      try { localStorage.setItem(verKey, String(nextV)); } catch {}
       setGenerated(true);
-      setStatus({ type: "ok", msg: "Document generated and downloaded." });
+      setStatus({ type: "ok", msg: "Generated and downloaded " + filename });
     } catch (e) { setStatus({ type: "err", msg: e.message }); }
     finally { setGenerating(false); }
   }
@@ -304,6 +368,7 @@ export default function DealDesk() {
       const res = await fetch(API_BASE + "/api/preview", {
         method: "POST", headers: authHeaders(), body: JSON.stringify(buildGenerateBody()),
       });
+      check401(res);
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || ("Preview failed (" + res.status + ")")); }
       const ctype = res.headers.get("content-type") || "";
       if (ctype.includes("application/pdf")) {
@@ -312,10 +377,16 @@ export default function DealDesk() {
         setPreviewMode("pdf");
         setPreviewDegraded(false);
       } else {
-        const html = await res.text();
+        // HTML fallback. Also tolerate an older engine that replies with {"html":"..."} JSON,
+        // so the popup never shows raw JSON text.
+        const text = await res.text();
+        let html = text;
+        if (ctype.includes("application/json") || /^\s*\{/.test(text)) {
+          try { const j = JSON.parse(text); if (j && typeof j.html === "string") html = j.html; } catch {}
+        }
         setPreviewHtml(html || "<p>(nothing to preview)</p>");
         setPreviewMode("html");
-        setPreviewDegraded(res.headers.get("x-preview-degraded") === "1");
+        setPreviewDegraded(true);
       }
       setPreviewOpen(true);
     } catch (e) { setStatus({ type: "err", msg: e.message }); }

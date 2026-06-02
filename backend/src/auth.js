@@ -6,7 +6,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
-const TOKEN_TTL = process.env.TOKEN_TTL || "12h";
+const TOKEN_TTL = process.env.TOKEN_TTL || "7d";
 
 // Users come from either the APP_USERS env var (a JSON array) or a users.json file.
 // Each user: { "email": "...", "name": "...", "passwordHash": "<bcrypt hash>" }.
