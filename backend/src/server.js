@@ -137,8 +137,31 @@ app.post("/api/generate", async (req, res) => {
   }
 });
 
-// Preview: build the same document, but return it rendered as HTML for an in-app popup
-// instead of downloading the file. Lets the rep eyeball it before generating.
+// Convert a .docx to .pdf with LibreOffice so the preview matches the Word file exactly.
+function docxToPdf(docxPath) {
+  return new Promise((resolve, reject) => {
+    const { execFile } = require("child_process");
+    const outDir = path.dirname(docxPath);
+    const soffice = process.env.SOFFICE_BIN || "soffice";
+    execFile(
+      soffice,
+      ["--headless", "--norestore", "--nolockcheck",
+       "-env:UserInstallation=file:///tmp/lo_profile",
+       "--convert-to", "pdf:writer_pdf_Export", "--outdir", outDir, docxPath],
+      { timeout: 120000 },
+      (err, _stdout, stderr) => {
+        if (err) return reject(new Error("PDF render failed: " + (stderr || err.message)));
+        const pdf = docxPath.replace(/\.docx$/i, ".pdf");
+        if (!fs.existsSync(pdf)) return reject(new Error("PDF was not produced"));
+        resolve(pdf);
+      }
+    );
+  });
+}
+
+// Preview: build the real document, render it to a PDF, and return that PDF so the popup
+// looks exactly like the downloaded Word file. If the renderer fails (e.g. the server is
+// low on memory), fall back to a simplified HTML view so preview never hard-fails.
 app.post("/api/preview", async (req, res) => {
   const cleanup = [];
   try {
@@ -158,10 +181,22 @@ app.post("/api/preview", async (req, res) => {
       choices.proposal = proposal;
     }
     const result = await generate.generateDocument(deal, choices);
-    const mammoth = require("mammoth");
-    const conv = await mammoth.convertToHtml({ path: result.file });
-    try { fs.unlinkSync(result.file); } catch (_) {}
-    res.json({ html: conv.value || "" });
+
+    try {
+      const pdf = await docxToPdf(result.file);
+      const buf = fs.readFileSync(pdf);
+      try { fs.unlinkSync(result.file); fs.unlinkSync(pdf); } catch (_) {}
+      res.setHeader("Content-Type", "application/pdf");
+      return res.send(buf);
+    } catch (convErr) {
+      // Graceful fallback so the rep still sees content on a low-memory host.
+      const mammoth = require("mammoth");
+      const conv = await mammoth.convertToHtml({ path: result.file });
+      try { fs.unlinkSync(result.file); } catch (_) {}
+      res.setHeader("Content-Type", "text/html");
+      res.setHeader("X-Preview-Degraded", "1");
+      return res.send(conv.value || "<p>(nothing to preview)</p>");
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   } finally {

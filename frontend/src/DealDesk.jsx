@@ -107,6 +107,9 @@ export default function DealDesk() {
   const [previewing, setPreviewing] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewMode, setPreviewMode] = useState("pdf");
+  const [previewDegraded, setPreviewDegraded] = useState(false);
   const [status, setStatus] = useState(null); // { type: 'ok'|'err', msg }
   // decisions not stored in Salesforce
   const [provision, setProvision] = useState("default");
@@ -297,15 +300,31 @@ export default function DealDesk() {
   async function previewDocument() {
     setPreviewing(true); setStatus(null);
     try {
+      if (previewUrl) { URL.revokeObjectURL(previewUrl); setPreviewUrl(""); }
       const res = await fetch(API_BASE + "/api/preview", {
         method: "POST", headers: authHeaders(), body: JSON.stringify(buildGenerateBody()),
       });
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || ("Preview failed (" + res.status + ")")); }
-      const data = await res.json();
-      setPreviewHtml(data.html || "<p>(nothing to preview)</p>");
+      const ctype = res.headers.get("content-type") || "";
+      if (ctype.includes("application/pdf")) {
+        const blob = await res.blob();
+        setPreviewUrl(URL.createObjectURL(blob));
+        setPreviewMode("pdf");
+        setPreviewDegraded(false);
+      } else {
+        const html = await res.text();
+        setPreviewHtml(html || "<p>(nothing to preview)</p>");
+        setPreviewMode("html");
+        setPreviewDegraded(res.headers.get("x-preview-degraded") === "1");
+      }
       setPreviewOpen(true);
     } catch (e) { setStatus({ type: "err", msg: e.message }); }
     finally { setPreviewing(false); }
+  }
+
+  function closePreview() {
+    setPreviewOpen(false);
+    if (previewUrl) { URL.revokeObjectURL(previewUrl); setPreviewUrl(""); }
   }
 
   function addPhotos(fileList) {
@@ -698,20 +717,30 @@ export default function DealDesk() {
       </div>
 
       {previewOpen && (
-        <div className="modal-ov" onClick={() => setPreviewOpen(false)}>
+        <div className="modal-ov" onClick={closePreview}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-h">
-              <div style={{ fontWeight: 700, fontFamily: "var(--display)" }}>Document preview</div>
+              <div style={{ fontWeight: 700, fontFamily: "var(--display)" }}>
+                Document preview {previewMode === "pdf" ? "(exact)" : ""}
+              </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="modal-btn" onClick={() => {
                   const f = document.getElementById("preview-frame");
                   if (f && f.contentWindow) f.contentWindow.print();
                 }}>Print / Save as PDF</button>
-                <button className="modal-x" onClick={() => setPreviewOpen(false)}>Close</button>
+                <button className="modal-x" onClick={closePreview}>Close</button>
               </div>
             </div>
-            <iframe id="preview-frame" className="modal-frame" title="Document preview"
-              srcDoc={"<style>body{font-family:Georgia,'Times New Roman',serif;color:#1a1a1a;max-width:780px;margin:24px auto;padding:0 28px;line-height:1.5}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #ccc;padding:6px 9px;font-size:13px;text-align:left;vertical-align:top}h1,h2,h3{font-family:Arial,Helvetica,sans-serif;line-height:1.25}img{max-width:100%;height:auto}</style>" + previewHtml} />
+            {previewDegraded && (
+              <div className="modal-warn">
+                Showing a simplified preview — the server ran low on memory rendering the exact PDF.
+                The downloaded Word file is unaffected. (Bumping the Render plan fixes this.)
+              </div>
+            )}
+            {previewMode === "pdf"
+              ? <iframe id="preview-frame" className="modal-frame" title="Document preview" src={previewUrl} />
+              : <iframe id="preview-frame" className="modal-frame" title="Document preview"
+                  srcDoc={"<style>body{font-family:Georgia,'Times New Roman',serif;color:#1a1a1a;max-width:780px;margin:24px auto;padding:0 28px;line-height:1.5}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #ccc;padding:6px 9px;font-size:13px;text-align:left;vertical-align:top}h1,h2,h3{font-family:Arial,Helvetica,sans-serif;line-height:1.25}img{max-width:100%;height:auto}</style>" + previewHtml} />}
           </div>
         </div>
       )}
@@ -889,6 +918,7 @@ const CSS = `
 .modal-x{font-family:var(--body);font-weight:600;font-size:12.5px;color:var(--ink);background:transparent;border:1px solid var(--line-2);border-radius:8px;padding:8px 14px;cursor:pointer}
 .modal-x:hover{border-color:var(--ink)}
 .modal-frame{flex:1;width:100%;border:none;background:#fff}
+.modal-warn{padding:9px 16px;font-size:12px;font-weight:600;color:#8a5a00;background:#FBEFD6;border-bottom:1px solid #EAD9A8}
 .payload{margin:0 16px 16px;border:1px solid var(--line-2);border-radius:9px;overflow:hidden;animation:rise .3s ease both}
 .payload-h{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.04em;
   text-transform:uppercase;color:var(--ink-soft);padding:8px 12px;background:var(--paper);border-bottom:1px solid var(--line)}
