@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
   Factory, Calculator, FileText, ShieldCheck, TrendingUp, AlertTriangle,
-  Plug, Check, Layers, Sparkles, ChevronRight, ArrowRight, Lock, Image as ImageIcon
+  Plug, Check, Layers, Sparkles, ChevronRight, ArrowRight, Lock, Image as ImageIcon,
+  HelpCircle, Send, Scale
 } from "lucide-react";
 
 /* ============================================================
@@ -159,6 +160,17 @@ export default function DealDesk() {
   const [propTimeline, setPropTimeline] = useState("");    // one per line
   const [risks, setRisks] = useState([{ risk: "", mitigation: "" }]);
   const [photos, setPhotos] = useState([]);                // [{label, dataUrl, name}]
+
+  // pre-flight questions (go into the approval Teams message + email, not the document)
+  const [qPilot, setQPilot] = useState("");
+  const [qOptOut, setQOptOut] = useState("");
+  const [qInstaller, setQInstaller] = useState("");
+  const [qImplFees, setQImplFees] = useState("");
+  const [qExpansion, setQExpansion] = useState("");
+
+  // approval / review sending
+  const [approving, setApproving] = useState(null);        // "revops" | "svp" | "legal"
+  const [approvalStatus, setApprovalStatus] = useState(null);
 
   const authHeaders = () => ({
     "Content-Type": "application/json",
@@ -399,6 +411,28 @@ export default function DealDesk() {
   function closePreview() {
     setPreviewOpen(false);
     if (previewUrl) { URL.revokeObjectURL(previewUrl); setPreviewUrl(""); }
+  }
+
+  async function sendApproval(type) {
+    setApproving(type); setApprovalStatus(null);
+    try {
+      const body = buildGenerateBody("combined"); // approvals always send the combined document
+      body.approval = {
+        type,
+        answers: {
+          pilot_period: qPilot, opt_out: qOptOut, hardware_installer: qInstaller,
+          implementation_fees: qImplFees, expansion: qExpansion,
+        },
+      };
+      const res = await fetch(API_BASE + "/api/approve", {
+        method: "POST", headers: authHeaders(), body: JSON.stringify(body),
+      });
+      check401(res);
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || ("Request failed (" + res.status + ")"));
+      setApprovalStatus({ type: "ok", msg: j.message || "Sent." });
+    } catch (e) { setApprovalStatus({ type: "err", msg: e.message }); }
+    finally { setApproving(null); }
   }
 
   function addPhotos(fileList) {
@@ -700,6 +734,25 @@ export default function DealDesk() {
               </div>
             )}
           </Panel>
+
+          <Panel icon={<HelpCircle size={15} />} title="Have you answered the following questions?" step="07"
+            note="These are not added to the document. They go in the Teams message and email to RevOps, SVP, and Legal.">
+            <Field label="How long is the pilot period?">
+              <input className="inp" value={qPilot} onChange={(e) => setQPilot(e.target.value)} placeholder="e.g., 8 weeks" />
+            </Field>
+            <Field label="Will the customer have an opt-out at the pilot period end date?">
+              <input className="inp" value={qOptOut} onChange={(e) => setQOptOut(e.target.value)} placeholder="e.g., Yes, with 30 days notice before the end date" />
+            </Field>
+            <Field label="Who is installing the hardware?">
+              <input className="inp" value={qInstaller} onChange={(e) => setQInstaller(e.target.value)} placeholder="e.g., Customer, with Maneva guidance" />
+            </Field>
+            <Field label="Have we talked about implementation fees?">
+              <input className="inp" value={qImplFees} onChange={(e) => setQImplFees(e.target.value)} placeholder="e.g., Yes, waived for Phase 1" />
+            </Field>
+            <Field label="How many expansion lines are there, and what is the expansion pricing?">
+              <input className="inp" value={qExpansion} onChange={(e) => setQExpansion(e.target.value)} placeholder="e.g., 4 additional lines per the Order Form volume schedule" />
+            </Field>
+          </Panel>
         </div>
 
         {/* ============ RIGHT: LIVE OUTPUT ============ */}
@@ -788,6 +841,48 @@ export default function DealDesk() {
               <div className={"status " + (status.type === "err" ? "status-err" : "status-ok")}>
                 {status.type === "err" ? <AlertTriangle size={13} /> : <Check size={13} strokeWidth={3} />}
                 <span>{status.msg}</span>
+              </div>
+            )}
+          </div>
+
+          {/* approval & review */}
+          <div className="out">
+            <div className="out-head"><span>Approval &amp; review</span><span className="muted">Teams + email</span></div>
+            <div className="apprv">
+              {(q.tone === "warn" || q.tone === "stop") && (
+                <div className="apprv-row">
+                  <div className="apprv-c">
+                    <div className="apprv-t">RevOps Approval <span className="apprv-req">required for this discount</span></div>
+                    <div className="apprv-sub">Sends to RevOps with the combined document and your answers.</div>
+                  </div>
+                  <button className="gen2" disabled={!!approving} onClick={() => sendApproval("revops")}>
+                    <Send size={14} /> {approving === "revops" ? "Sending…" : "Request"}
+                  </button>
+                </div>
+              )}
+              <div className="apprv-row">
+                <div className="apprv-c">
+                  <div className="apprv-t">SVP Approval {q.tone === "stop" && <span className="apprv-req">required for this discount</span>}</div>
+                  <div className="apprv-sub">Routes to the right SVP based on who is signed in.</div>
+                </div>
+                <button className="gen2" disabled={!!approving} onClick={() => sendApproval("svp")}>
+                  <Send size={14} /> {approving === "svp" ? "Sending…" : "Request"}
+                </button>
+              </div>
+              <div className="apprv-row">
+                <div className="apprv-c">
+                  <div className="apprv-t">Legal Review</div>
+                  <div className="apprv-sub">Sends to Legal with the combined document and your answers.</div>
+                </div>
+                <button className="gen2 ghost2" disabled={!!approving} onClick={() => sendApproval("legal")}>
+                  <Scale size={14} /> {approving === "legal" ? "Sending…" : "Request"}
+                </button>
+              </div>
+            </div>
+            {approvalStatus && (
+              <div className={"status " + (approvalStatus.type === "err" ? "status-err" : "status-ok")}>
+                {approvalStatus.type === "err" ? <AlertTriangle size={13} /> : <Check size={13} strokeWidth={3} />}
+                <span>{approvalStatus.msg}</span>
               </div>
             )}
           </div>
@@ -998,6 +1093,15 @@ const CSS = `
 .gen2.ghost2{color:var(--ink);background:transparent;border:1px solid var(--line-2)}
 .gen2.ghost2:hover{background:#fff;border-color:var(--ink)}
 .gen2:disabled{opacity:.5;cursor:default}
+
+/* approval & review rows */
+.apprv{display:flex;flex-direction:column;gap:9px;margin:12px 16px 4px}
+.apprv-row{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--paper)}
+.apprv-c{flex:1;min-width:0}
+.apprv-t{font-family:var(--display);font-weight:700;font-size:13px;color:var(--ink);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.apprv-sub{font-size:11px;color:var(--ink-soft);margin-top:2px;line-height:1.35}
+.apprv-req{font-family:var(--body);font-weight:700;font-size:9.5px;letter-spacing:.03em;text-transform:uppercase;color:#8a5a00;background:#FBEFD6;border:1px solid #EAD9A8;border-radius:5px;padding:2px 6px}
+.apprv .gen2{flex:0 0 auto;width:auto;padding:9px 16px}
 
 /* preview popup */
 .modal-ov{position:fixed;inset:0;background:rgba(20,25,30,.45);display:grid;place-items:center;z-index:60;padding:24px;animation:rise .15s ease both}

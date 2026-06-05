@@ -204,6 +204,99 @@ app.post("/api/preview", async (req, res) => {
   }
 });
 
+// ---- Approval & review routing ----
+const APPROVAL_FLOW_URL = process.env.APPROVAL_FLOW_URL || "";
+// AEs whose SVP approval routes to the primary SVP (Ben Coulombe).
+// Everyone else routes to the secondary SVP (Osvaldo Granillo).
+const SVP_PRIMARY_AES = [
+  "michael wiora", "april rachjgot", "susan chen", "faith hruska", "christian tubbs",
+  "remii rivers", "jeff nasser", "caam finch", "stephen temple",
+];
+function approvalRecipient(type, aeName) {
+  const n = String(aeName || "").trim().toLowerCase();
+  if (type === "revops") return process.env.APPROVAL_REVOPS_EMAIL || "";     // RevOps (Saurabh Sanganee)
+  if (type === "legal") return process.env.APPROVAL_LEGAL_EMAIL || "";       // Legal (Artem Chaykovskyy)
+  if (type === "svp") {
+    return SVP_PRIMARY_AES.includes(n)
+      ? (process.env.APPROVAL_SVP_PRIMARY_EMAIL || "")    // listed AEs -> Ben Coulombe
+      : (process.env.APPROVAL_SVP_SECONDARY_EMAIL || ""); // everyone else -> Osvaldo Granillo
+  }
+  return "";
+}
+const APPROVAL_LABEL = { revops: "RevOps Approval", svp: "SVP Approval", legal: "Legal Review" };
+
+// Build the combined document, then hand it (with the rep's pre-flight answers) to the
+// Microsoft flow that sends the Teams message and the email to the right person.
+app.post("/api/approve", async (req, res) => {
+  const cleanup = [];
+  try {
+    const approval = req.body.approval || {};
+    const type = approval.type;
+    if (!APPROVAL_LABEL[type]) return res.status(400).json({ error: "Unknown approval type." });
+
+    const aeName = (req.user && req.user.name) || "";
+    const recipient = approvalRecipient(type, aeName);
+    if (!APPROVAL_FLOW_URL || !recipient) {
+      return res.status(503).json({ error: "Approval routing isn't connected yet. Ask IT to set up the Teams/email flow and the recipient addresses." });
+    }
+
+    let deal = req.body.deal;
+    if (!deal && req.body.opportunityId) { const sf = require("./salesforce"); deal = await sf.getDeal(req.body.opportunityId); }
+    if (!deal) return res.status(400).json({ error: "Provide a deal (load an opportunity first)." });
+
+    const choices = { ...(req.body.choices || {}), mode: "combined" };
+    const proposal = req.body.proposal ? { ...req.body.proposal } : null;
+    if (proposal) {
+      const tmpDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "dd-photos-"));
+      cleanup.push(tmpDir);
+      proposal.photos = savePhotos(req.body.photos, tmpDir);
+      choices.proposal = proposal;
+    }
+    const result = await generate.generateDocument(deal, choices);
+    const fileBuf = fs.readFileSync(result.file);
+    const fileName = path.basename(result.file);
+    try { fs.unlinkSync(result.file); } catch (_) {}
+
+    const customer = deal.customer_legal_name || "the customer";
+    const a = approval.answers || {};
+    const qa = [
+      ["How long is the pilot period?", a.pilot_period],
+      ["Will the customer have an opt-out at the pilot period end date?", a.opt_out],
+      ["Who is installing the hardware?", a.hardware_installer],
+      ["Have we talked about implementation fees?", a.implementation_fees],
+      ["How many expansion lines / expansion pricing?", a.expansion],
+    ].map(([q, ans]) => `- ${q}\n  ${ans && String(ans).trim() ? String(ans).trim() : "(not answered)"}`).join("\n");
+
+    const subject = `${APPROVAL_LABEL[type]} requested - ${customer}`;
+    const body =
+`${APPROVAL_LABEL[type]} has been requested by ${aeName} for ${customer}.
+Discount approval status: ${result.pricing.approvalRequired}.
+
+Pre-flight questions:
+${qa}
+
+The combined Service Agreement and proposal is attached.`;
+
+    const flowRes = await fetch(APPROVAL_FLOW_URL, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approvalType: type, requestedBy: aeName, customer,
+        recipientEmail: recipient, subject, body,
+        fileName, fileContentBase64: fileBuf.toString("base64"),
+      }),
+    });
+    if (!flowRes.ok) {
+      const tx = await flowRes.text().catch(() => "");
+      return res.status(502).json({ error: "The notification service rejected the request: " + (tx || flowRes.status) });
+    }
+    res.json({ message: `${APPROVAL_LABEL[type]} sent, with the document and your answers.` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    res.on("finish", () => cleanup.forEach((d) => fs.rm(d, { recursive: true, force: true }, () => {})));
+  }
+});
+
 // Serve the built frontend if present (single-service deploy option).
 const FRONTEND = path.join(__dirname, "..", "public");
 if (fs.existsSync(FRONTEND)) app.use(express.static(FRONTEND));
