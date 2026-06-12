@@ -19,32 +19,46 @@ const FLOOR = { standard: 500, professional: 1500, enterprise: 3000 };
 // Currency: base rates are USD. 0.72 is the CAD->USD rate, so CAD = USD / 0.72 (CAD higher).
 const CAD_TO_USD = 0.72;
 
-function quote(tier, lines, billing, activityCount, customPctRaw, currency) {
+function quote(tier, lines, billing, activityCount, customPctRaw, currency, customDollarRaw) {
   const floor = FLOOR[tier];
   const customPricing = lines > 15;
   const idx = Math.min(Math.max(lines, 1), 15);
   const base = RATE_TABLE[tier][idx];
+  const fx = String(currency).toUpperCase() === "CAD" ? (1 / CAD_TO_USD) : 1;
+  const curName = fx !== 1 ? "CAD" : "USD";
+  const cardPerLine = base * fx; // rate-card per-line price in the displayed currency (already volume-adjusted)
+
   const activityPct = Math.min(activityCount * 0.05, 0.20);
-  let cp = Number(customPctRaw) || 0;
-  if (cp > 1) cp = cp / 100;
+
+  // The custom discount can be entered as a % OR as a target $ per line per month.
+  // If a $ amount is given, it wins and we back out the % from the rate-card price.
+  const customDollar = Number(customDollarRaw) || 0;
+  let cp;
+  if (customDollar > 0) {
+    cp = cardPerLine > 0 ? 1 - customDollar / cardPerLine : 0;
+    if (cp < 0) cp = 0; // entered at or above rate card -> treat as no discount
+  } else {
+    cp = Number(customPctRaw) || 0;
+    if (cp > 1) cp = cp / 100;
+  }
+  cp = Math.round(cp * 10000) / 10000; // avoid floating-point dust right at the approval thresholds
+
   const totalPct = activityPct + cp;
   const discounted = base * (1 - totalPct);
   const finalUsd = Math.max(discounted, floor);
   const floorTriggered = discounted < floor;
-  const fx = String(currency).toUpperCase() === "CAD" ? (1 / CAD_TO_USD) : 1;
-  const curName = fx !== 1 ? "CAD" : "USD";
   const finalRate = finalUsd * fx;
   const mrr = finalRate * lines;
   const arr = mrr * 12;
   const billed = billing === "annual" ? arr : mrr;
-  const savingsVsCard = (base * fx - finalRate) * lines * 12;
+  const savingsVsCard = (cardPerLine - finalRate) * lines * 12;
   let approval, tone;
   if (totalPct < 0.10) { approval = "No approval needed"; tone = "ok"; }
   else if (totalPct < 0.20) { approval = "RevOps approval"; tone = "warn"; }
   else { approval = "RevOps + SVP approval"; tone = "stop"; }
-  return { base: base * fx, floor: floor * fx, currency: curName, activityPct, customPct: cp,
+  return { base: cardPerLine, floor: floor * fx, currency: curName, activityPct, customPct: cp,
     totalPct, discounted: discounted * fx, finalRate, floorTriggered, mrr, arr, billed,
-    savingsVsCard, approval, tone, customPricing };
+    savingsVsCard, approval, tone, customPricing, cardPerLine, customDollar };
 }
 
 /* ---------- helpers ---------- */
@@ -119,6 +133,8 @@ export default function DealDesk() {
   const [currency, setCurrency] = useState("USD");
   const [acts, setActs] = useState({});
   const [custom, setCustom] = useState(0);
+  const [customDollar, setCustomDollar] = useState(""); // target $ per line per month (optional)
+  const [discountMode, setDiscountMode] = useState("pct"); // which field drives: "pct" | "dollar"
   const [annualSavings, setAnnualSavings] = useState(300000);
   const [revenueProtected, setRevenueProtected] = useState(2000000);
   const [generated, setGenerated] = useState(false);
@@ -227,8 +243,9 @@ export default function DealDesk() {
   }, [token]);
 
   const activeActs = Object.values(acts).filter(Boolean).length;
-  const q = useMemo(() => quote(tier, Math.max(1, lines || 1), billing, activeActs, custom, currency),
-    [tier, lines, billing, activeActs, custom, currency]);
+  const q = useMemo(() => quote(tier, Math.max(1, lines || 1), billing, activeActs, custom, currency,
+    discountMode === "dollar" ? customDollar : ""),
+    [tier, lines, billing, activeActs, custom, currency, customDollar, discountMode]);
   const FX = currency === "CAD" ? (1 / CAD_TO_USD) : 1;
   const sku = buildSku(skuApplication, tier, Math.max(1, lines || 1));
 
@@ -329,7 +346,7 @@ export default function DealDesk() {
       skus: sku,
       pricing: {
         tier: TIER_TO_SF[tier], lines: Math.max(1, lines || 1), annual: billing === "annual",
-        customDiscount: (Number(custom) || 0) / 100, currency,
+        customDiscount: q.customPct, currency,
         activities: { customerReferral: !!acts.referral, logoRights: !!acts.logo, caseStudy: !!acts.case, videoTestimonial: !!acts.video },
       },
       hardware: hw.map((h) => ({ name: h.item || h.name, cost: h.cost })),
@@ -564,8 +581,20 @@ export default function DealDesk() {
               </div>
             </Field>
             <Field label="Custom discount %">
-              <input className="inp mono" type="number" min={0} max={100} value={custom}
-                onChange={(e) => setCustom(parseFloat(e.target.value || "0"))} />
+              <input className="inp mono" type="number" min={0} max={100}
+                value={discountMode === "dollar" ? (q.customPct > 0 ? +(q.customPct * 100).toFixed(1) : "") : custom}
+                onChange={(e) => { setCustom(parseFloat(e.target.value || "0")); setDiscountMode("pct"); }} />
+            </Field>
+            <Field label="Custom discount $ (Add the per line per month value here)">
+              <input className="inp mono" type="number" min={0} step={50}
+                value={discountMode === "dollar" ? customDollar : (custom > 0 ? +(q.cardPerLine * (1 - q.customPct)).toFixed(2) : "")}
+                onChange={(e) => { setCustomDollar(e.target.value); setDiscountMode("dollar"); }}
+                placeholder="e.g., 3000" />
+              {q.customPct > 0 && (
+                <div className="hint-calc">
+                  {money(q.cardPerLine, currency)}/line rate card · <b>{+(q.customPct * 100).toFixed(1)}% off</b> · {q.approval}
+                </div>
+              )}
             </Field>
           </Panel>
 
@@ -1038,6 +1067,8 @@ const CSS = `
   border-bottom:1px solid var(--line);font-family:var(--display);font-weight:700;font-size:13px}
 .live{display:inline-flex;align-items:center;gap:6px;font-family:var(--body);font-weight:500;font-size:11px;color:var(--ink-soft)}
 .muted{font-family:var(--body);font-weight:500;font-size:11px;color:var(--ink-soft)}
+.hint-calc{margin-top:7px;font-size:11.5px;color:var(--ink-soft);line-height:1.4}
+.hint-calc b{color:var(--ink);font-weight:700}
 
 .hero{display:flex;align-items:center;justify-content:space-between;padding:18px 16px;gap:16px;
   background:linear-gradient(180deg,#fff, var(--paper))}
